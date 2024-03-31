@@ -1,8 +1,7 @@
 FROM golang:1.21
-WORKDIR /app
+WORKDIR /appa
 COPY go.mod go.sum ./
-COPY .env ./
 RUN go mod download
 COPY . .
-WORKDIR /app
+WORKDIR /appa
 CMD ["go", "run", "main.go"]

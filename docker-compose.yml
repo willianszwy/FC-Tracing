@@ -1,0 +1,19 @@
+version: '3.7'
+
+services:
+  service-a:
+    build:
+      context: ./ServiceA
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./ServiceA:/appa
+  service-b:
+    build:
+      context: ./ServiceB
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./ServiceB:/appb
