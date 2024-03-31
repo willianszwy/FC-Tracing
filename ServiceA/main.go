@@ -2,21 +2,83 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/zipkin"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"regexp"
 )
 
+var logger = log.New(os.Stderr, "zipkin-example", log.Ldate|log.Ltime|log.Llongfile)
+
+func initTracer(url string) (func(context.Context) error, error) {
+	exporter, err := zipkin.New(
+		url,
+		zipkin.WithLogger(logger),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	batcher := sdktrace.NewBatchSpanProcessor(exporter)
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(batcher),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName("Service-A"),
+		)),
+	)
+	otel.SetTracerProvider(tp)
+
+	return tp.Shutdown, nil
+}
+
 func main() {
+
+	url := flag.String("zipkin", "http://zipkin:9411/api/v2/spans", "zipkin url")
+	flag.Parse()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	shutdown, err := initTracer(*url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			log.Fatal("failed to shutdown TracerProvider: %w", err)
+		}
+	}()
+
+	tr := otel.GetTracerProvider().Tracer("component-main")
+
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 
 	r.Get("/", func(writer http.ResponseWriter, request *http.Request) {
+		carrier := propagation.HeaderCarrier(request.Header)
+		ctx := request.Context()
+		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+		ctx, span := tr.Start(ctx, "zipcode service")
+		defer span.End()
+
 		log.Println("starting request service A")
 
 		zipcode := request.URL.Query().Get("zipcode")
@@ -34,12 +96,19 @@ func main() {
 			"zipcode": zipcode,
 		})
 
-		response, err := http.Post(endpoint, "application/json", bytes.NewBuffer(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(body))
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+		}
+
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+		response, err := http.DefaultClient.Do(req)
 		if err != nil {
 			log.Println("error: ", err)
 			http.Error(writer, "error calling service B", http.StatusInternalServerError)
 			return
 		}
+
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
 		defer response.Body.Close()
