@@ -3,6 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"log"
 	"net/http"
 	"regexp"
@@ -14,20 +17,28 @@ import (
 type TemperatureHandler struct {
 	viaCepClient  *viacep.ViaCep
 	weatherClient *weather.Weather
+	tr            trace.Tracer
 }
 
 type RequestBody struct {
 	Zipcode string `json:"zipcode"`
 }
 
-func New(viacepClient *viacep.ViaCep, weatherClient *weather.Weather) *TemperatureHandler {
+func New(viacepClient *viacep.ViaCep, weatherClient *weather.Weather, tr trace.Tracer) *TemperatureHandler {
 	return &TemperatureHandler{
 		viaCepClient:  viacepClient,
 		weatherClient: weatherClient,
+		tr:            tr,
 	}
 }
 
 func (t *TemperatureHandler) Handler(writer http.ResponseWriter, request *http.Request) {
+	log.Println(request.Header)
+	carrier := propagation.HeaderCarrier(request.Header)
+	ctx := request.Context()
+	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+	ctx, span := t.tr.Start(ctx, "Service B")
+	defer span.End()
 	log.Println("starting request")
 
 	var req RequestBody
@@ -45,7 +56,7 @@ func (t *TemperatureHandler) Handler(writer http.ResponseWriter, request *http.R
 		return
 	}
 
-	city, err := t.viaCepClient.FindByZipCode(request.Context(), req.Zipcode)
+	city, err := t.viaCepClient.FindByZipCode(ctx, req.Zipcode)
 	if err != nil {
 		log.Println("error", err.Error())
 		writer.WriteHeader(http.StatusNotFound)
@@ -53,7 +64,7 @@ func (t *TemperatureHandler) Handler(writer http.ResponseWriter, request *http.R
 		return
 	}
 
-	tempByCity, err := t.weatherClient.FindTempByCity(request.Context(), city.Name)
+	tempByCity, err := t.weatherClient.FindTempByCity(ctx, city.Name)
 	if err != nil {
 		log.Println("error", err.Error())
 		writer.WriteHeader(http.StatusInternalServerError)

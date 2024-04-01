@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"log"
 	"net/http"
 	"net/url"
@@ -20,13 +21,16 @@ type Response struct {
 type Weather struct {
 	client interfaces.HTTPClient
 	Apikey string
+	tr     trace.Tracer
 }
 
-func New(client interfaces.HTTPClient, apikey string) *Weather {
-	return &Weather{client: client, Apikey: apikey}
+func New(client interfaces.HTTPClient, apikey string, tr trace.Tracer) *Weather {
+	return &Weather{client: client, Apikey: apikey, tr: tr}
 }
 
 func (w *Weather) FindTempByCity(ctx context.Context, city string) (Response, error) {
+	ctx, span := w.tr.Start(ctx, "WeatherAPI")
+	defer span.End()
 	log.Println("city:", city)
 	url := fmt.Sprintf("https://api.weatherapi.com/v1/current.json?key=%s&q=%s", w.Apikey, url.QueryEscape(city))
 	log.Println("find temp by city url", url)

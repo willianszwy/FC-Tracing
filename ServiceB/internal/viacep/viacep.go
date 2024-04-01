@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"net/http"
 	"willianszwy/FC-Cloud-Run/internal/interfaces"
 )
@@ -14,15 +15,19 @@ type City struct {
 
 type ViaCep struct {
 	client interfaces.HTTPClient
+	tr     trace.Tracer
 }
 
-func New(client interfaces.HTTPClient) *ViaCep {
+func New(client interfaces.HTTPClient, tr trace.Tracer) *ViaCep {
 	return &ViaCep{
 		client: client,
+		tr:     tr,
 	}
 }
 
 func (vc *ViaCep) FindByZipCode(ctx context.Context, zipCode string) (City, error) {
+	ctx, span := vc.tr.Start(ctx, "Viacep")
+	defer span.End()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://viacep.com.br/ws/"+zipCode+"/json", nil)
 	if err != nil {
 		return City{}, fmt.Errorf("error creating request %w", err)

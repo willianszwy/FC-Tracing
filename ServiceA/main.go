@@ -36,19 +36,21 @@ func initTracer(url string) (func(context.Context) error, error) {
 	batcher := sdktrace.NewBatchSpanProcessor(exporter)
 
 	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithSpanProcessor(batcher),
 		sdktrace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceName("Service-A"),
+			semconv.ServiceName("service-a"),
 		)),
 	)
 	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	return tp.Shutdown, nil
 }
 
 func main() {
-
+	log.Println("Start service A...")
 	url := flag.String("zipkin", "http://zipkin:9411/api/v2/spans", "zipkin url")
 	flag.Parse()
 
@@ -72,7 +74,7 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 
-	r.Get("/", func(writer http.ResponseWriter, request *http.Request) {
+	r.Post("/", func(writer http.ResponseWriter, request *http.Request) {
 		carrier := propagation.HeaderCarrier(request.Header)
 		ctx := request.Context()
 		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
@@ -81,11 +83,16 @@ func main() {
 
 		log.Println("starting request service A")
 
-		zipcode := request.URL.Query().Get("zipcode")
-		log.Println(fmt.Sprintf("[zipcode:%s]", zipcode))
+		var reqBody RequestBody
+		err := json.NewDecoder(request.Body).Decode(&reqBody)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Println(fmt.Sprintf("[zipcode:%s]", reqBody.Zipcode))
 
 		regex := regexp.MustCompile("^[0-9]{8}$")
-		if !regex.MatchString(zipcode) {
+		if !regex.MatchString(reqBody.Zipcode) {
 			writer.WriteHeader(http.StatusUnprocessableEntity)
 			http.Error(writer, "invalid zipCode", http.StatusUnprocessableEntity)
 			return
@@ -93,7 +100,7 @@ func main() {
 
 		endpoint := "http://service-b:8080/temperature"
 		body, _ := json.Marshal(map[string]string{
-			"zipcode": zipcode,
+			"zipcode": reqBody.Zipcode,
 		})
 
 		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(body))
@@ -122,4 +129,8 @@ func main() {
 	})
 
 	http.ListenAndServe(":8081", r)
+}
+
+type RequestBody struct {
+	Zipcode string `json:"zipcode"`
 }
